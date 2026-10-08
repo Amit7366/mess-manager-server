@@ -4,6 +4,7 @@ import { AuthUser, UserRole } from '../../../types';
 import { assertMonthUnlocked } from '../../../utils/monthLock';
 import { mealTotal, monthDateRange } from '../../../utils/calculations';
 import { logActivity } from '../../../utils/activity';
+import { computeMonthSummary } from '../../reports/services/report.service';
 
 function normalizeDate(input: string | Date): Date {
   const d = new Date(input);
@@ -182,14 +183,87 @@ export async function getCalendar(
   year: number,
   userId?: string
 ) {
-  const targetUserId =
-    actor.role === UserRole.MEMBER ? actor.id : await resolveTargetUser(actor, userId);
+  if (!actor.messId) throw new ApiError(400, 'No mess assigned');
 
-  const meals = await listMeals(actor, { userId: targetUserId, month, year });
-  const map: Record<string, (typeof meals)[0]> = {};
-  for (const meal of meals) {
+  const showAll = actor.role !== UserRole.MEMBER && !userId;
+  const targetUserId = actor.role === UserRole.MEMBER
+    ? actor.id
+    : userId
+      ? await resolveTargetUser(actor, userId)
+      : undefined;
+
+  const { start, end } = monthDateRange(month, year);
+  const [allMeals, summary] = await Promise.all([
+    Meal.find({ messId: actor.messId, date: { $gte: start, $lte: end } }).populate('userId', 'name'),
+    computeMonthSummary(actor.messId, month, year),
+  ]);
+
+  const days: Record<string, ReturnType<typeof serialize> & { note?: string }> = {};
+  const dayMembers: Record<
+    string,
+    {
+      id: string;
+      userId: string;
+      name: string;
+      breakfast: number;
+      lunch: number;
+      dinner: number;
+      guestMeals: number;
+      dailyTotal: number;
+      note?: string;
+    }[]
+  > = {};
+  const hostelTotals: Record<string, number> = {};
+  const eaters = new Set<string>();
+  let userMeals = 0;
+
+  for (const meal of allMeals) {
+    const populated = meal.userId as { _id?: { toString(): string }; name?: string };
+    const memberId = populated?._id ? populated._id.toString() : meal.userId.toString();
     const key = new Date(meal.date).toISOString().slice(0, 10);
-    map[key] = meal;
+    const total = mealTotal(meal);
+    hostelTotals[key] = (hostelTotals[key] || 0) + total;
+    if (total > 0) eaters.add(memberId);
+
+    const visible = actor.role === UserRole.MEMBER ? memberId === actor.id : showAll || memberId === targetUserId;
+    if (!visible) continue;
+
+    const entry = {
+      id: meal._id.toString(),
+      userId: memberId,
+      name: populated?.name || 'Member',
+      breakfast: meal.breakfast,
+      lunch: meal.lunch,
+      dinner: meal.dinner,
+      guestMeals: meal.guestMeals,
+      dailyTotal: total,
+      note: meal.note,
+    };
+    dayMembers[key] = [...(dayMembers[key] || []), entry].sort((a, b) => a.name.localeCompare(b.name));
+    userMeals += total;
+
+    if (!showAll) {
+      days[key] = {
+        ...serialize(meal),
+        userId: memberId,
+        note: meal.note,
+      };
+    }
   }
-  return { month, year, userId: targetUserId, days: map };
+
+  return {
+    month,
+    year,
+    userId: targetUserId || null,
+    days,
+    dayMembers,
+    hostelTotals,
+    summary: {
+      totalMeals: summary.totalMeals,
+      activeEaters: eaters.size,
+      mealRate: summary.mealRate,
+      userMeals: showAll ? summary.totalMeals : userMeals,
+      isLocked: summary.isLocked,
+    },
+  };
 }
