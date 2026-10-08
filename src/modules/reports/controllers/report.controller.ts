@@ -60,6 +60,10 @@ export async function exportAdminCsv(req: AuthRequest, res: Response) {
     report.members.map((m) => ({
       name: m.name,
       email: m.email,
+      breakfast: m.breakfast,
+      lunch: m.lunch,
+      dinner: m.dinner,
+      guestMeals: m.guestMeals,
       totalMeals: m.totalMeals,
       mealRate: m.mealRate,
       totalCost: m.totalCost,

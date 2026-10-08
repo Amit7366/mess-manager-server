@@ -139,12 +139,21 @@ export async function adminMonthReport(actor: AuthUser, month: number, year: num
     Deposit.find({ messId: actor.messId, date: { $gte: start, $lte: end } }),
   ]);
 
-  const mealsByUser: Record<string, number> = {};
+  const mealsByUser: Record<
+    string,
+    { breakfast: number; lunch: number; dinner: number; guestMeals: number; total: number }
+  > = {};
   const depositsByUser: Record<string, number> = {};
 
   for (const m of meals) {
     const uid = m.userId.toString();
-    mealsByUser[uid] = (mealsByUser[uid] || 0) + mealTotal(m);
+    const row = mealsByUser[uid] || { breakfast: 0, lunch: 0, dinner: 0, guestMeals: 0, total: 0 };
+    row.breakfast += m.breakfast;
+    row.lunch += m.lunch;
+    row.dinner += m.dinner;
+    row.guestMeals += m.guestMeals;
+    row.total += mealTotal(m);
+    mealsByUser[uid] = row;
   }
   for (const d of deposits) {
     const uid = d.userId.toString();
@@ -153,7 +162,8 @@ export async function adminMonthReport(actor: AuthUser, month: number, year: num
 
   const membersSummary = members.map((m) => {
     const uid = m._id.toString();
-    const totalMeals = mealsByUser[uid] || 0;
+    const counts = mealsByUser[uid] || { breakfast: 0, lunch: 0, dinner: 0, guestMeals: 0, total: 0 };
+    const totalMeals = counts.total;
     const totalDeposit = depositsByUser[uid] || 0;
     const totalCost = calculateMemberCost(totalMeals, summary.mealRate);
     const balance = calculateBalance(totalDeposit, totalCost);
@@ -161,12 +171,16 @@ export async function adminMonthReport(actor: AuthUser, month: number, year: num
       userId: uid,
       name: m.name,
       email: m.email,
+      breakfast: counts.breakfast,
+      lunch: counts.lunch,
+      dinner: counts.dinner,
+      guestMeals: counts.guestMeals,
       totalMeals,
       mealRate: summary.mealRate,
       totalCost,
       totalDeposit,
       balance,
-      status: balance >= 0 ? 'refund' : 'due',
+      status: balance > 0 ? 'refund' : balance < 0 ? 'due' : 'settled',
     };
   });
 
